@@ -1,0 +1,94 @@
+##Mendelian randomization
+#devtools::install_github("MRCIEU/TwoSampleMR")
+install.packages("MendelianRandomization")
+library(vcfR)
+library(TwoSampleMR)
+library(tidyverse)
+library(twosamplemr)
+library(MendelianRandomization)
+library(data.table)
+data <- vcfR::read.vcfR("ieu-b-40.vcf.gz") #读取VCF文件
+gt<- data.frame(data@gt)
+gt$name=str_c("name",1:length(gt$FORMAT))
+gt=gt[grepl("ID", gt[, 1]), ]
+fix<-data.frame(data@fix)
+fix$name=str_c("name",1:length(fix$ID))
+meta=data.frame(data@meta)
+head(fix)
+fix=fix %>% select(ID,ALT,REF,name)
+
+head(gt)
+dat <- as.character(unlist(strsplit(gt$ieu.b.40, split = ":")))
+dat=data.frame(matrix(dat,ncol=6,byrow=T))
+colnames(dat)=as.character(unlist(strsplit(gt$FORMAT[1], split = ":")))
+dat$name=gt$name
+head(dat)
+
+identical(dat$name,fix$name)
+fix=filter(fix, name %in% dat$name)###fix=fix[intersect(dat$ID,fix$ID),]
+dat=filter(dat, name%in% fix$name)
+colnames(fix)[1]="mcID"
+x <- inner_join(fix, dat, by = "name")
+MR_rt=data.frame(beta=x$ES,
+                 se=x$SE,
+                 eaf=x$AF,
+                 adjpvalue=x$LP,
+                 name=x$name)
+
+MR_rt$beta=as.numeric(MR_rt$beta)
+MR_rt$se=as.numeric(MR_rt$se)
+MR_rt$eaf=as.numeric(MR_rt$eaf)
+MR_rt$adjpvalue=as.numeric(MR_rt$adjpvalue)
+MR_rt$pvalue=10^(-MR_rt$adjpvalue)
+
+MR=cbind(fix,MR_rt)
+MR1=inner_join(fix,MR_rt,by="name")
+row.names(MR)=NULL
+colnames(MR)[1]="SNP"
+colnames(MR)[c(2:3)]=c("effect_allele","other_allele")
+MR=MR[MR$pvalue<10^(-8),]
+
+write.csv(MR,file="exposure.csv")
+
+exposure_dat=read_exposure_data(filename="exposure.csv",
+                                sep=",", 
+                                snp_col = "SNP", 
+                                beta_col = "beta", 
+                                se_col = "se", 
+                                effect_allele_col = "effect_allele", 
+                                other_allele_col = "other_allele",
+                                pval_col = "pvalue",
+                                eaf_col='eaf' , # eaf不是必须的，前面整理进去也可
+                                clump=TRUE)
+exposure_dat$id.exposure='exposure1'
+
+outcome_dat<-extract_outcome_data(snps=exposure_dat$SNP, 
+                                  outcomes="ebi-a-GCST011364")
+colnames(outcome_dat)=c("SNP","chr","pos","beta","se",
+                        "samplesize.outcome","pvalue","eaf","effect_allele","other_allele",
+                        "outcome","id.outcome","originalname.outcome","outcome.deprecated","mr_keep.outcome",
+                        "data_source.outcome")
+write.csv(outcome_dat, file="outcome.csv") #保存到本地
+outcome_dat<-read_outcome_data(filename = "outcome.csv", 
+                               sep = ",", 
+                               snp_col = "SNP", 
+                               beta_col = "beta", 
+                               se_col = "se", 
+                               effect_allele_col = "effect_allele", 
+                               other_allele_col = "other_allele",
+                               pval_col = "pvalue") #
+mr_test<- harmonise_data ( exposure_dat = exposure_dat, outcome_dat = outcome_dat)
+res <- mr(mr_test)
+res
+
+hetero= mr_heterogeneity(mr_test) #异质性检验
+hetero
+pleiotropy= mr_pleiotropy_test(mr_test)
+pleiotropy
+mr_pleiotropy_test(mr_test)
+mr_scatter_plot(res, mr_test)
+
+res_single<-mr_singlesnp(mr_test)
+mr_forest_plot(res_single)
+mr_funnel_plot(res_single)
+mr_leaveoneout_plot(leaveoneout_results = mr_leaveoneout(mr_test))
